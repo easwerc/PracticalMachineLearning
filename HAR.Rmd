@@ -1,0 +1,122 @@
+---
+title: "Human Activity Recognition"
+author: "Easwer Chinnadurai"
+date: "Saturday, January 24, 2015"
+output: html_document
+---
+
+## Executive Summary 
+In this project, we will use data from accelerometers on the belt, forearm, arm, and dumbbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.  
+
+1. The objective is build a model to predict the manner the exercise was done for new data
+2. Describe how the model was build, how cross validation was used and calculate the expected out of sample error and the rationale behind the choices.  
+
+The key findings from our analysis are  
+
+* Key features were identified by exploratory data analysis and feature selection technique.  
+* An efficient data model was build using Random Forest machine learning algorithm which gave out-of-sample error of 1.01%  
+
+*Setting Global parameters and loading the required libraries*  
+```{r setoptions, echo=FALSE}
+rm(list=ls())
+library(knitr); library(ggplot2)
+library(corrplot); library(caret); 
+library(randomForest); library(doParallel)
+opts_chunk$set(echo=FALSE, cache=FALSE)
+set.seed(1024)
+```  
+
+##Exploratory Data Analysis  
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. We have been provided with data from accelerometers on the belt, forearm, arm, and dumbbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har.
+  
+### Loading and Pre-processing the raw data  
+```{r data_analysis}
+train_data_url <- "E:\\Coursera\\PracticalMachineLearning\\pml-training.csv"
+test_data_url <- "E:\\Coursera\\PracticalMachineLearning\\pml-testing.csv"
+
+# Open the files in an editor and visually see the data to get a general idea of 
+# the structure.This help decide which read function to use and its parameters
+
+train <- read.csv(train_data_url, header=T)
+test <- read.csv(test_data_url, header=T)
+```
+By Opening the files in an editor and visually seeing the data to get a general idea of the structure. Also google to find more information about the accelerometers & measurements they provide in wearables, we can see that  
+1. The train data contains 160 variables with 19622 observations. `r {dim(train)}`  
+2. The raw data from the instruments are the x, y, z dimension parameters.  
+3. There are lot of derived variables like, variance, standard deviation, average, min, max, ... which are calculated from the above raw data.  
+4. The first 7 variables in the data set (x thru num_window) are for identification or grouping the raw data and don't play a role in the prediction.  
+
+#### Feature Selection
+  To build an effective model we need to select the features of significant importance and drop the ones that are not relevant. Due to the points (3 & 4) mentioned above, we can discard the variables 1 thru 7 and all of the derived variables. Then a check for missing values shows no NA in the selected columns. So lets then analyze on the correlation between the remaining variables and drop the variable that are highly correlated to reduce pair-wise correlations.
+```{r Feature_Selection, fig.width=8, fig.height=8}
+##Feature Selection
+#Selecting the raw measurement fields leaving the derived values
+inCols<- grep("^roll_|^pitch_|^yaw_|^total|_[xyz]$|classe", names(train))
+selectedData <- (train[, inCols])
+#Check for NA in the selected data
+sum(colSums(is.na(selectedData)))
+
+correlationMatrix <- cor(selectedData[,-which(names(selectedData) == "classe")])
+corrplot(correlationMatrix, method="circle", title="Correlation of Variables", tl.cex=0.5)
+#Drop highly correlated features
+highlyCorrelated <- findCorrelation(correlationMatrix, cutoff=0.70)
+inCols <- names(selectedData[,-highlyCorrelated])
+```  
+
+##Model Building
+  Our goal is to classify if the barbell lifts was done correctly or not. Since this is a classification problem, I choose Random Forest Model to train and predict using cross-validation. The given training data was divided into 60:40 percent for training and validation. As we have high volume (>10K) of observation for training, it could take long time to build our data model. To boost performance / save model building time,  
+1. We utilize the build in cross-validation in Random Forest package to do 3 folds validation.  
+2. Do parallel processing to take advantage of the multi-cores CPU available in most of the modern machines, commonly used today.  
+
+```{r model_RF, echo=TRUE}
+inTrain <- createDataPartition(selectedData$classe, p=0.6)[[1]]
+trainData <- train[inTrain, inCols]
+valData <- train[-inTrain, inCols]
+
+cl <- makePSOCKcluster(3) #explicitly creating the cluster object due to bug in caret6.0-*
+x <- clusterEvalQ(cl, library(foreach))
+registerDoParallel(cl)
+
+#date()
+trCtrl <- trainControl(method="cv", number=3, allowParallel=TRUE)
+modelFit <- train(trainData$classe ~ ., data=trainData, 
+                method="parRF", prox=TRUE, trControl=trCtrl)
+#date()
+stopCluster(cl)
+#print(confusionMatrix(trainData$classe, predict(modelFit, trainData)))
+print(confusionMatrix(valData$classe, predict(modelFit, valData)))
+```
+
+###Model Summary
+  With the feature selection and parallelization we were able to  
+* Built a classified model with 100% and 98.99% accuracy for in and OOB samples respectively.  
+* Balance between bias and variance using k-fold cross validation.  
+* Obtain OOB Sample error of 1.01%.  
+* Train the model in less than 10 minutes (on a 4 core, i3-Intel CPU, @1.9GHz, utilizing 3 cores)  
+
+### Test case - Prediction
+To predict the classification for the test cases, first we check if there are NA for the variable that we have used in the model. Since there are none, we submit the test data to our trained model to predict the classe.
+```{r Predict}
+#Check for NA in the test data
+length(inCols) <- length(inCols)-1 #remove classe -the last element
+sum(colSums(is.na(test[,inCols])))
+
+#Now predict the test data as there are no NAs in the selected features
+answer <- predict(modelFit, test)
+
+#Get the predicted answer to submission files
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+#pml_write_files(answer)
+```
+Then write the answers to files and submit for evaluation. We see that all the predicted values are correct.
+
+##Conclusion
+**Random Forest** was chosen as machine learning algorithm for building our data model, used feature selection techniques, parallelization and k-fold cross validation to optimize and obtained good accuracy with an OOB sample error of 1.01%
+
